@@ -13,7 +13,12 @@ function Test-CISFirewall {
         return @()
     }
 
+    $total = $controls.Count
+    $i = 0
     $results = foreach ($ctl in $controls) {
+        $i++
+        Write-Progress -Activity "Auditing $moduleName" -Status "$i of $total - $($ctl.Id)" -PercentComplete (($i / $total) * 100)
+
         if ($ctl.Skipped) {
             [PSCustomObject]@{
                 Id       = $ctl.Id
@@ -41,6 +46,7 @@ function Test-CISFirewall {
             }
         }
     }
+    Write-Progress -Activity "Auditing $moduleName" -Completed
 
     return $results
 }

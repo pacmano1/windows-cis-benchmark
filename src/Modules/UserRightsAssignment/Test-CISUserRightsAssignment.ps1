@@ -19,7 +19,12 @@ function Test-CISUserRightsAssignment {
     # Export secedit once
     $seceditData = Get-SeceditExport
 
+    $total = $controls.Count
+    $i = 0
     $results = foreach ($ctl in $controls) {
+        $i++
+        Write-Progress -Activity "Auditing $moduleName" -Status "$i of $total - $($ctl.Id)" -PercentComplete (($i / $total) * 100)
+
         if ($ctl.Skipped) {
             [PSCustomObject]@{
                 Id       = $ctl.Id
@@ -88,6 +93,8 @@ function Test-CISUserRightsAssignment {
             Detail   = "Privilege: $key"
         }
     }
+
+    Write-Progress -Activity "Auditing $moduleName" -Completed
 
     return $results
 }

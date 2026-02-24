@@ -23,7 +23,12 @@ function Test-CISSecurityOptions {
         $seceditData = Get-SeceditExport
     }
 
+    $total = $controls.Count
+    $i = 0
     $results = foreach ($ctl in $controls) {
+        $i++
+        Write-Progress -Activity "Auditing $moduleName" -Status "$i of $total - $($ctl.Id)" -PercentComplete (($i / $total) * 100)
+
         # Skip AWS-excluded controls
         if ($ctl.Skipped) {
             [PSCustomObject]@{
@@ -66,6 +71,8 @@ function Test-CISSecurityOptions {
             }
         }
     }
+
+    Write-Progress -Activity "Auditing $moduleName" -Completed
 
     return $results
 }
