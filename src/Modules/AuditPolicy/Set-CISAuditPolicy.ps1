@@ -1,18 +1,25 @@
 function Set-CISAuditPolicy {
     <#
     .SYNOPSIS
-        Applies CIS Section 17 - Advanced Audit Policy via GPO audit.csv.
+        Applies CIS Section 17 - Advanced Audit Policy.
+    .DESCRIPTION
+        In GPO mode writes audit.csv to SYSVOL. In local mode uses
+        auditpol /set to configure each subcategory directly.
     .PARAMETER GpoName
-        Name of the GPO to configure.
+        Name of the GPO to configure (ignored in local mode).
     .PARAMETER DryRun
         If $true, logs what would be changed without modifying anything.
+    .PARAMETER LocalPolicy
+        Apply directly via auditpol instead of GPO audit.csv.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
         [string]$GpoName,
 
-        [bool]$DryRun = $true
+        [bool]$DryRun = $true,
+
+        [switch]$LocalPolicy
     )
 
     $moduleName = 'AuditPolicy'
@@ -31,7 +38,45 @@ function Set-CISAuditPolicy {
         return
     }
 
-    # -- Build audit.csv and write to GPO SYSVOL --
+    if ($LocalPolicy) {
+        # -- Apply directly via auditpol /set --
+        $applied = 0
+        $errors  = 0
+
+        foreach ($ctl in $activeControls) {
+            $subcategory = $ctl.Subcategory
+            $setting     = $ctl.InclusionSetting
+
+            # Build auditpol flags
+            $auditpolArgs = @('/set', '/subcategory:"{0}"' -f $subcategory)
+
+            switch ($setting) {
+                'Success'             { $auditpolArgs += '/success:enable';  $auditpolArgs += '/failure:disable' }
+                'Failure'             { $auditpolArgs += '/success:disable'; $auditpolArgs += '/failure:enable' }
+                'Success and Failure' { $auditpolArgs += '/success:enable';  $auditpolArgs += '/failure:enable' }
+                'No Auditing'         { $auditpolArgs += '/success:disable'; $auditpolArgs += '/failure:disable' }
+            }
+
+            try {
+                $result = & auditpol.exe $auditpolArgs 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    Write-CISLog -Message "[LOCAL] auditpol: $subcategory = $setting" -Level Info -ControlId $ctl.Id
+                    $applied++
+                } else {
+                    Write-CISLog -Message "[LOCAL] auditpol failed for $subcategory`: $result" -Level Error -ControlId $ctl.Id
+                    $errors++
+                }
+            } catch {
+                Write-CISLog -Message "[LOCAL] auditpol error for $subcategory`: $_" -Level Error -ControlId $ctl.Id
+                $errors++
+            }
+        }
+
+        Write-CISLog -Message "AuditPolicy: $applied settings applied, $errors errors (local)" -Level Info -Module $moduleName
+        return
+    }
+
+    # -- GPO mode: Build audit.csv and write to GPO SYSVOL --
     try {
         $gpo = Get-GPO -Name $GpoName -ErrorAction Stop
     } catch {
@@ -53,7 +98,6 @@ function Set-CISAuditPolicy {
     $csvLines = @('Machine Name,Policy Target,Subcategory,Subcategory GUID,Inclusion Setting,Exclusion Setting')
 
     foreach ($ctl in $activeControls) {
-        # Map InclusionSetting to the numeric value
         $settingValue = switch ($ctl.InclusionSetting) {
             'Success'             { 'Success' }
             'Failure'             { 'Failure' }

@@ -1,21 +1,25 @@
 function Set-CISAdminTemplatesUser {
     <#
     .SYNOPSIS
-        Applies CIS Section 19 - Administrative Templates (User) via GPO.
+        Applies CIS Section 19 - Administrative Templates (User).
     .DESCRIPTION
-        Uses Set-GPRegistryValue targeting the User Configuration portion
-        of the GPO (HKCU paths).
+        In GPO mode uses Set-GPRegistryValue targeting User Configuration.
+        In local mode writes directly to HKCU via Set-ItemProperty.
     .PARAMETER GpoName
-        Name of the GPO to configure.
+        Name of the GPO to configure (ignored in local mode).
     .PARAMETER DryRun
         If $true, logs what would be changed without modifying anything.
+    .PARAMETER LocalPolicy
+        Apply directly to local registry instead of GPO.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
         [string]$GpoName,
 
-        [bool]$DryRun = $true
+        [bool]$DryRun = $true,
+
+        [switch]$LocalPolicy
     )
 
     $moduleName = 'AdminTemplatesUser'
@@ -38,6 +42,19 @@ function Set-CISAdminTemplatesUser {
         if ($DryRun) {
             Write-CISLog -Message "[DRY RUN] Would set (User) $gpRegPath\$($reg.Name) = $value" -Level Info -ControlId $ctl.Id
             $applied++
+        } elseif ($LocalPolicy) {
+            try {
+                $localPath = $reg.Path
+                if (-not (Test-Path $localPath)) {
+                    New-Item -Path $localPath -Force | Out-Null
+                }
+                Set-ItemProperty -Path $localPath -Name $reg.Name -Value $value -Type $reg.Type -ErrorAction Stop
+                Write-CISLog -Message "[LOCAL] Set (User) $localPath\$($reg.Name) = $value" -Level Info -ControlId $ctl.Id
+                $applied++
+            } catch {
+                Write-CISLog -Message "Failed to set $($ctl.Id): $_" -Level Error -ControlId $ctl.Id
+                $errors++
+            }
         } else {
             try {
                 Set-GPRegistryValue -Name $GpoName -Key $gpRegPath -ValueName $reg.Name -Type $reg.Type -Value $value -ErrorAction Stop

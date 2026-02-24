@@ -3,13 +3,14 @@
     Entry point: creates GPOs and applies CIS Benchmark L1 settings.
 .DESCRIPTION
     1. Initializes environment and loads configuration
-    2. Runs pre-flight connectivity check
-    3. Creates state backup
-    4. Creates GPO framework (one GPO per module)
-    5. Applies settings for each enabled module
-    6. Runs gpupdate /force to apply GPO settings locally
-    7. Runs post-flight connectivity check
-    8. If post-flight fails, offers rollback
+    2. Detects domain membership (auto-selects GPO or local policy mode)
+    3. Runs pre-flight connectivity check (domain mode only)
+    4. Creates state backup
+    5. Creates GPO framework or prepares local policy (per mode)
+    6. Applies settings for each enabled module
+    7. Runs gpupdate /force (domain) or refreshes local policy
+    8. Runs post-flight connectivity check (domain mode only)
+    9. If post-flight fails, offers rollback
 .PARAMETER ProjectRoot
     Path to the security_benchmarks project root.
 .PARAMETER Modules
@@ -20,6 +21,9 @@
     Skip prerequisite validation.
 .PARAMETER Force
     Skip confirmation prompts.
+.PARAMETER LocalPolicy
+    Force local policy mode (write directly to registry/secedit/auditpol
+    instead of GPOs). Auto-detected when not domain-joined.
 #>
 [CmdletBinding()]
 param(
@@ -31,7 +35,9 @@ param(
 
     [switch]$SkipPrereqCheck,
 
-    [switch]$Force
+    [switch]$Force,
+
+    [switch]$LocalPolicy
 )
 
 $ErrorActionPreference = 'Stop'
@@ -53,19 +59,46 @@ $config = Initialize-CISEnvironment -ProjectRoot $ProjectRoot -SkipPrereqCheck:$
 # Override DryRun if explicitly passed
 $isDryRun = if ($null -ne $DryRun) { $DryRun } else { $config.DryRun }
 
+# -- Detect domain membership --
+$isLocalMode = $false
+if ($LocalPolicy) {
+    $isLocalMode = $true
+} else {
+    try {
+        $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+        if (-not $cs.PartOfDomain) {
+            $isLocalMode = $true
+        }
+    } catch {
+        $isLocalMode = $true
+    }
+}
+
 if ($isDryRun) {
     Write-Host '    ~  Mode: DRY RUN (no changes will be made)' -ForegroundColor Yellow
 } else {
     Write-Host '    !  Mode: LIVE (changes will be applied)' -ForegroundColor Red
 }
+if ($isLocalMode) {
+    Write-Host '    +  Target: LOCAL POLICY (standalone machine detected)' -ForegroundColor Cyan
+} else {
+    Write-Host '    +  Target: GROUP POLICY (domain-joined machine)' -ForegroundColor Cyan
+}
 
 # -- Safety confirmation --
 if (-not $isDryRun -and -not $Force) {
     Write-Host ''
-    Write-Host '  +----------------------------------------------------------+' -ForegroundColor Yellow
-    Write-Host '  |  WARNING: This will CREATE GPOs and APPLY settings!      |' -ForegroundColor Yellow
-    Write-Host "  |  Target OU: $($config.TargetOU)".PadRight(59) + '|' -ForegroundColor Yellow
-    Write-Host '  +----------------------------------------------------------+' -ForegroundColor Yellow
+    if ($isLocalMode) {
+        Write-Host '  +----------------------------------------------------------+' -ForegroundColor Yellow
+        Write-Host '  |  WARNING: This will MODIFY LOCAL POLICY settings!        |' -ForegroundColor Yellow
+        Write-Host '  |  Changes apply directly to this machine.                 |' -ForegroundColor Yellow
+        Write-Host '  +----------------------------------------------------------+' -ForegroundColor Yellow
+    } else {
+        Write-Host '  +----------------------------------------------------------+' -ForegroundColor Yellow
+        Write-Host '  |  WARNING: This will CREATE GPOs and APPLY settings!      |' -ForegroundColor Yellow
+        Write-Host "  |  Target OU: $($config.TargetOU)".PadRight(59) + '|' -ForegroundColor Yellow
+        Write-Host '  +----------------------------------------------------------+' -ForegroundColor Yellow
+    }
     Write-Host ''
 
     $confirm = Read-Host '  Type YES to proceed'
@@ -79,7 +112,7 @@ if (-not $isDryRun -and -not $Force) {
 }
 
 # -- Pre-flight connectivity --
-if ($config.HaltOnConnectivityFailure -and -not $SkipPrereqCheck) {
+if (-not $isLocalMode -and $config.HaltOnConnectivityFailure -and -not $SkipPrereqCheck) {
     Write-Host '  [2/7] Pre-flight connectivity check...' -ForegroundColor Cyan
     $preFlight = Test-AWSConnectivity
     if (-not $preFlight.Pass) {
@@ -108,10 +141,20 @@ if (-not $isDryRun) {
     Write-Host '  [3/7] Backup skipped (dry run)' -ForegroundColor DarkGray
 }
 
-# -- Create GPO framework --
-Write-Host '  [4/7] Creating GPO framework...' -ForegroundColor Cyan
-$gpoMap = New-CISGpoFramework -DryRun $isDryRun
-Write-Host "    +  $($gpoMap.Count) GPOs configured" -ForegroundColor Green
+# -- Create GPO framework (domain) or prepare local mode --
+$gpoMap = @{}
+if ($isLocalMode) {
+    Write-Host '  [4/7] Preparing local policy apply...' -ForegroundColor Cyan
+    # In local mode, map each module to a placeholder name (not used by Set-CIS*)
+    foreach ($modName in $modulesToApply) {
+        $gpoMap[$modName] = '__LocalPolicy__'
+    }
+    Write-Host "    +  $($gpoMap.Count) modules ready for local apply" -ForegroundColor Green
+} else {
+    Write-Host '  [4/7] Creating GPO framework...' -ForegroundColor Cyan
+    $gpoMap = New-CISGpoFramework -DryRun $isDryRun
+    Write-Host "    +  $($gpoMap.Count) GPOs configured" -ForegroundColor Green
+}
 
 # -- Apply each module --
 Write-Host "  [5/7] Applying $($modulesToApply.Count) modules..." -ForegroundColor Cyan
@@ -143,11 +186,23 @@ foreach ($modName in $applyOrder) {
         continue
     }
 
-    Write-Host "    ~  $modName -> $gpoName ..." -ForegroundColor DarkGray -NoNewline
+    if ($isLocalMode) {
+        Write-Host "    ~  $modName (local policy) ..." -ForegroundColor DarkGray -NoNewline
+    } else {
+        Write-Host "    ~  $modName -> $gpoName ..." -ForegroundColor DarkGray -NoNewline
+    }
 
     try {
-        & $setFunc -GpoName $gpoName -DryRun $isDryRun
-        Write-Host "`r    +  $modName -> $gpoName" -ForegroundColor Green
+        if ($isLocalMode) {
+            & $setFunc -GpoName '__LocalPolicy__' -DryRun $isDryRun -LocalPolicy
+        } else {
+            & $setFunc -GpoName $gpoName -DryRun $isDryRun
+        }
+        if ($isLocalMode) {
+            Write-Host "`r    +  $modName (local policy)" -ForegroundColor Green
+        } else {
+            Write-Host "`r    +  $modName -> $gpoName" -ForegroundColor Green
+        }
     } catch {
         Write-Host "`r    x  $modName - $($_.Exception.Message)" -ForegroundColor Red
         Write-CISLog -Message "Error applying $modName`: $_" -Level Error
@@ -156,23 +211,27 @@ foreach ($modName in $applyOrder) {
 
 Write-Host ''
 
-# -- Force Group Policy update so local state reflects GPO changes --
+# -- Force policy refresh --
 if (-not $isDryRun) {
-    Write-Host '  [6/7] Applying Group Policy to local machine...' -ForegroundColor Cyan
-    try {
-        $gpResult = gpupdate.exe /force /wait:120 2>&1
-        Write-Host '    +  Group Policy updated successfully' -ForegroundColor Green
-        Write-CISLog -Message 'gpupdate /force completed successfully.' -Level Info
-    } catch {
-        Write-Host '    !  Group Policy update returned warnings (settings may need a reboot)' -ForegroundColor Yellow
-        Write-CISLog -Message "gpupdate /force warning: $_" -Level Warning
+    if ($isLocalMode) {
+        Write-Host '  [6/7] Local policy applied directly (no gpupdate needed)' -ForegroundColor Green
+    } else {
+        Write-Host '  [6/7] Applying Group Policy to local machine...' -ForegroundColor Cyan
+        try {
+            $gpResult = gpupdate.exe /force /wait:120 2>&1
+            Write-Host '    +  Group Policy updated successfully' -ForegroundColor Green
+            Write-CISLog -Message 'gpupdate /force completed successfully.' -Level Info
+        } catch {
+            Write-Host '    !  Group Policy update returned warnings (settings may need a reboot)' -ForegroundColor Yellow
+            Write-CISLog -Message "gpupdate /force warning: $_" -Level Warning
+        }
     }
 } else {
-    Write-Host '  [6/7] Group Policy update skipped (dry run)' -ForegroundColor DarkGray
+    Write-Host '  [6/7] Policy refresh skipped (dry run)' -ForegroundColor DarkGray
 }
 
 # -- Post-flight connectivity --
-if ($config.PostFlightCheck -and -not $isDryRun -and -not $SkipPrereqCheck) {
+if (-not $isLocalMode -and $config.PostFlightCheck -and -not $isDryRun -and -not $SkipPrereqCheck) {
     Write-Host '  [7/7] Post-flight connectivity check...' -ForegroundColor Cyan
     $postFlight = Test-AWSConnectivity
 

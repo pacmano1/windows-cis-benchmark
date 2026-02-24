@@ -12,7 +12,9 @@ function Set-CISAccountPolicies {
         [Parameter(Mandatory)]
         [string]$GpoName,
 
-        [bool]$DryRun = $true
+        [bool]$DryRun = $true,
+
+        [switch]$LocalPolicy
     )
 
     Write-CISLog -Message 'AccountPolicies: Domain password/lockout policy is controlled by AWS Managed AD.' -Level Warning -Module 'AccountPolicies'
