@@ -145,7 +145,30 @@ if (-not $isDryRun) {
 $gpoMap = @{}
 if ($isLocalMode) {
     Write-Host '  [4/7] Preparing local policy apply...' -ForegroundColor Cyan
-    # In local mode, map each module to a placeholder name (not used by Set-CIS*)
+
+    # Skip controls that break RDP on standalone machines (NLA/TLS require domain)
+    $localPolicySkipIds = @(
+        '18.9.35.3.9.3'   # SecurityLayer = 2 (TLS) - requires valid cert/domain trust
+        '18.9.35.3.9.4'   # UserAuthentication = 1 (NLA) - requires domain auth
+        '18.9.35.3.9.5'   # MinEncryptionLevel = 3 (High) - can block RDP without TLS
+    )
+    $skippedCount = 0
+    foreach ($modName in $config.ModuleConfigs.Keys) {
+        $controls = $config.ModuleConfigs[$modName].Controls
+        if (-not $controls) { continue }
+        foreach ($ctl in $controls) {
+            if ($localPolicySkipIds -contains $ctl.Id -and -not $ctl.Skipped) {
+                $ctl.Skipped    = $true
+                $ctl.SkipReason = 'Skipped in local policy mode (breaks RDP on standalone machines)'
+                $skippedCount++
+            }
+        }
+    }
+    if ($skippedCount -gt 0) {
+        Write-Host "    -  Skipped $skippedCount RDP controls (NLA/TLS require domain)" -ForegroundColor Yellow
+    }
+
+    # Map each module to a placeholder name
     foreach ($modName in $modulesToApply) {
         $gpoMap[$modName] = '__LocalPolicy__'
     }
@@ -210,6 +233,33 @@ foreach ($modName in $applyOrder) {
 }
 
 Write-Host ''
+
+# -- RDP safety: revert NLA/TLS if already set on standalone machines --
+if ($isLocalMode -and -not $isDryRun) {
+    $tsPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+    if (Test-Path $tsPath) {
+        $currentNLA = (Get-ItemProperty -Path $tsPath -Name 'UserAuthentication' -ErrorAction SilentlyContinue).UserAuthentication
+        $currentSL  = (Get-ItemProperty -Path $tsPath -Name 'SecurityLayer' -ErrorAction SilentlyContinue).SecurityLayer
+        $currentEnc = (Get-ItemProperty -Path $tsPath -Name 'MinEncryptionLevel' -ErrorAction SilentlyContinue).MinEncryptionLevel
+        $rdpFixed = $false
+        if ($currentNLA -eq 1) {
+            Set-ItemProperty -Path $tsPath -Name 'UserAuthentication' -Value 0 -ErrorAction SilentlyContinue
+            $rdpFixed = $true
+        }
+        if ($currentSL -eq 2) {
+            Set-ItemProperty -Path $tsPath -Name 'SecurityLayer' -Value 0 -ErrorAction SilentlyContinue
+            $rdpFixed = $true
+        }
+        if ($currentEnc -eq 3) {
+            Set-ItemProperty -Path $tsPath -Name 'MinEncryptionLevel' -Value 1 -ErrorAction SilentlyContinue
+            $rdpFixed = $true
+        }
+        if ($rdpFixed) {
+            Write-Host '    !  Reverted NLA/TLS RDP settings (incompatible with standalone)' -ForegroundColor Yellow
+            Write-CISLog -Message 'Reverted RDP NLA/TLS settings for standalone compatibility' -Level Warning
+        }
+    }
+}
 
 # -- Force policy refresh --
 if (-not $isDryRun) {
