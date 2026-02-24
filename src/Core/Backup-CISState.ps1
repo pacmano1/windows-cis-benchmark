@@ -34,26 +34,36 @@ function Backup-CISState {
 
     Write-CISLog -Message "-- Creating state backup: $backupPath --" -Level Info
 
-    # -- GPO Backups --
-    $gpoDir = Join-Path $backupPath 'GPOs'
-    New-Item -Path $gpoDir -ItemType Directory -Force | Out-Null
-
     $prefix = $config.GpoPrefix
     $modulesToBackup = if ($Modules) { $Modules } else {
         $config.Modules.GetEnumerator() | Where-Object { $_.Value } | ForEach-Object { $_.Key }
     }
 
-    foreach ($modName in $modulesToBackup) {
-        $gpoName = "$prefix-$modName"
-        $gpo = Get-GPO -Name $gpoName -ErrorAction SilentlyContinue
-        if ($gpo) {
-            try {
-                Backup-GPO -Name $gpoName -Path $gpoDir -ErrorAction Stop | Out-Null
-                Write-CISLog -Message "Backed up GPO: $gpoName" -Level Info
-            } catch {
-                Write-CISLog -Message "Failed to back up GPO $gpoName`: $_" -Level Warning
+    # -- GPO Backups (domain-joined only) --
+    $isDomainJoined = $false
+    try {
+        $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+        $isDomainJoined = [bool]$cs.PartOfDomain
+    } catch { }
+
+    if ($isDomainJoined) {
+        $gpoDir = Join-Path $backupPath 'GPOs'
+        New-Item -Path $gpoDir -ItemType Directory -Force | Out-Null
+
+        foreach ($modName in $modulesToBackup) {
+            $gpoName = "$prefix-$modName"
+            $gpo = Get-GPO -Name $gpoName -ErrorAction SilentlyContinue
+            if ($gpo) {
+                try {
+                    Backup-GPO -Name $gpoName -Path $gpoDir -ErrorAction Stop | Out-Null
+                    Write-CISLog -Message "Backed up GPO: $gpoName" -Level Info
+                } catch {
+                    Write-CISLog -Message "Failed to back up GPO $gpoName`: $_" -Level Warning
+                }
             }
         }
+    } else {
+        Write-CISLog -Message 'Standalone machine - skipping GPO backup' -Level Info
     }
 
     # -- Secedit export --

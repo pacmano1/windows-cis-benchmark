@@ -92,13 +92,24 @@ if (-not $Force) {
     Write-Host ''
 }
 
+# -- Detect domain membership --
+$isDomainJoined = $false
+try {
+    $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+    $isDomainJoined = [bool]$cs.PartOfDomain
+} catch { }
+
 # -- Pre-flight --
-Write-Host '  [3/4] Pre-flight connectivity check...' -ForegroundColor Cyan
-$preFlight = Test-AWSConnectivity
-if (-not $preFlight.Pass) {
-    Write-Host '    !  Connectivity issues detected. Proceeding anyway.' -ForegroundColor Yellow
+if ($isDomainJoined) {
+    Write-Host '  [3/4] Pre-flight connectivity check...' -ForegroundColor Cyan
+    $preFlight = Test-AWSConnectivity
+    if (-not $preFlight.Pass) {
+        Write-Host '    !  Connectivity issues detected. Proceeding anyway.' -ForegroundColor Yellow
+    } else {
+        Write-Host '    +  Connectivity OK' -ForegroundColor Green
+    }
 } else {
-    Write-Host '    +  Connectivity OK' -ForegroundColor Green
+    Write-Host '  [3/4] Pre-flight check skipped (standalone)' -ForegroundColor DarkGray
 }
 
 # -- Restore --
@@ -117,18 +128,20 @@ Write-Host '    +  Restore complete' -ForegroundColor Green
 
 # -- Post-flight --
 Write-Host ''
-Write-Host '  Post-rollback connectivity check...' -ForegroundColor Cyan
-$postFlight = Test-AWSConnectivity
-
-Write-Host ''
 Write-Host '  ============================' -ForegroundColor DarkGray
 Write-Host '  Rollback Complete' -ForegroundColor White
 Write-Host '  ----------------------------' -ForegroundColor DarkGray
-if ($postFlight.Pass) {
-    Write-Host '    +  Connectivity: ALL PASSED' -ForegroundColor Green
+if ($isDomainJoined) {
+    Write-Host '  Post-rollback connectivity check...' -ForegroundColor Cyan
+    $postFlight = Test-AWSConnectivity
+    if ($postFlight.Pass) {
+        Write-Host '    +  Connectivity: ALL PASSED' -ForegroundColor Green
+    } else {
+        Write-Host '    !  Connectivity: ISSUES DETECTED' -ForegroundColor Yellow
+        Write-Host '       Review the results above.' -ForegroundColor DarkGray
+    }
 } else {
-    Write-Host '    !  Connectivity: ISSUES DETECTED' -ForegroundColor Yellow
-    Write-Host '       Review the results above.' -ForegroundColor DarkGray
+    Write-Host '    +  Local rollback complete' -ForegroundColor Green
 }
 Write-Host '  ============================' -ForegroundColor DarkGray
 Write-Host ''

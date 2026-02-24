@@ -49,62 +49,113 @@ function Restore-CISState {
         $meta.Modules
     }
 
-    $gpoDir = Join-Path $BackupPath 'GPOs'
+    # -- Detect domain membership --
+    $isDomainJoined = $false
+    try {
+        $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+        $isDomainJoined = [bool]$cs.PartOfDomain
+    } catch { }
 
-    foreach ($modName in $modulesToRestore) {
-        $gpoName = "$prefix-$modName"
-
-        if ($RemoveGPOs) {
-            # Unlink and delete the GPO entirely
-            try {
-                # Remove link first
-                Remove-GPLink -Name $gpoName -Target $targetOU -ErrorAction SilentlyContinue
-                Write-CISLog -Message "Unlinked GPO: $gpoName from $targetOU" -Level Info
-
-                # Delete GPO
-                Remove-GPO -Name $gpoName -ErrorAction Stop
-                Write-CISLog -Message "Deleted GPO: $gpoName" -Level Info
-            } catch {
-                Write-CISLog -Message "Failed to remove GPO $gpoName`: $_" -Level Warning
-            }
-        } else {
-            # Restore from backup
-            $gpo = Get-GPO -Name $gpoName -ErrorAction SilentlyContinue
-            if ($gpo) {
-                try {
-                    # Find the backup for this GPO
-                    $backupGpo = Get-ChildItem -Path $gpoDir -Directory | ForEach-Object {
-                        $bkManifest = Join-Path $_.FullName 'bkupInfo.xml'
-                        if (Test-Path $bkManifest) {
-                            [xml]$xml = Get-Content $bkManifest
-                            if ($xml.BackupInst.GPODisplayName.'#cdata-section' -eq $gpoName) {
-                                $_
-                            }
-                        }
-                    } | Select-Object -First 1
-
-                    if ($backupGpo) {
-                        Import-GPO -BackupId $backupGpo.Name -Path $gpoDir -TargetName $gpoName -ErrorAction Stop
-                        Write-CISLog -Message "Restored GPO from backup: $gpoName" -Level Info
-                    } else {
-                        Write-CISLog -Message "No backup found for GPO: $gpoName - skipping restore" -Level Warning
-                    }
-                } catch {
-                    Write-CISLog -Message "Failed to restore GPO $gpoName`: $_" -Level Error
-                }
-            } else {
-                Write-CISLog -Message "GPO not found (may have been deleted): $gpoName" -Level Warning
-            }
+    # -- Restore secedit baseline (works on standalone and domain) --
+    $seceditPath = Join-Path $BackupPath 'secedit-baseline.inf'
+    if (Test-Path $seceditPath) {
+        $tempDb = Join-Path $env:TEMP "cis_restore_secedit_$(Get-Random).sdb"
+        try {
+            $null = secedit.exe /configure /db $tempDb /cfg $seceditPath /areas SECURITYPOLICY USER_RIGHTS /quiet 2>&1
+            Write-CISLog -Message 'Restored secedit baseline' -Level Info
+        } catch {
+            Write-CISLog -Message "Failed to restore secedit baseline: $_" -Level Warning
+        } finally {
+            Remove-Item $tempDb -Force -ErrorAction SilentlyContinue
         }
     }
 
-    # -- Force group policy update --
-    Write-CISLog -Message 'Forcing Group Policy update...' -Level Info
-    try {
-        $null = gpupdate.exe /force /wait:30 2>&1
-        Write-CISLog -Message 'Group Policy update completed' -Level Info
-    } catch {
-        Write-CISLog -Message "gpupdate failed: $_" -Level Warning
+    # -- Restore auditpol baseline --
+    $auditPath = Join-Path $BackupPath 'auditpol-baseline.csv'
+    if (Test-Path $auditPath) {
+        try {
+            $null = auditpol.exe /restore /file:$auditPath 2>&1
+            Write-CISLog -Message 'Restored auditpol baseline' -Level Info
+        } catch {
+            Write-CISLog -Message "Failed to restore auditpol baseline: $_" -Level Warning
+        }
+    }
+
+    # -- Restore service states --
+    $svcPath = Join-Path $BackupPath 'services-baseline.json'
+    if (Test-Path $svcPath) {
+        $startTypeMap = @{ 'Auto' = 2; 'Manual' = 3; 'Disabled' = 4 }
+        try {
+            $services = Get-Content $svcPath -Raw | ConvertFrom-Json
+            foreach ($svc in $services) {
+                if ($startTypeMap.ContainsKey($svc.StartMode)) {
+                    $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$($svc.Name)"
+                    if (Test-Path $regPath) {
+                        Set-ItemProperty -Path $regPath -Name 'Start' -Value $startTypeMap[$svc.StartMode] -ErrorAction SilentlyContinue
+                    }
+                }
+            }
+            Write-CISLog -Message 'Restored service startup states' -Level Info
+        } catch {
+            Write-CISLog -Message "Failed to restore service states: $_" -Level Warning
+        }
+    }
+
+    # -- GPO restore (domain-joined only) --
+    if ($isDomainJoined) {
+        $gpoDir = Join-Path $BackupPath 'GPOs'
+
+        foreach ($modName in $modulesToRestore) {
+            $gpoName = "$prefix-$modName"
+
+            if ($RemoveGPOs) {
+                try {
+                    Remove-GPLink -Name $gpoName -Target $targetOU -ErrorAction SilentlyContinue
+                    Write-CISLog -Message "Unlinked GPO: $gpoName from $targetOU" -Level Info
+                    Remove-GPO -Name $gpoName -ErrorAction Stop
+                    Write-CISLog -Message "Deleted GPO: $gpoName" -Level Info
+                } catch {
+                    Write-CISLog -Message "Failed to remove GPO $gpoName`: $_" -Level Warning
+                }
+            } else {
+                $gpo = Get-GPO -Name $gpoName -ErrorAction SilentlyContinue
+                if ($gpo) {
+                    try {
+                        $backupGpo = Get-ChildItem -Path $gpoDir -Directory | ForEach-Object {
+                            $bkManifest = Join-Path $_.FullName 'bkupInfo.xml'
+                            if (Test-Path $bkManifest) {
+                                [xml]$xml = Get-Content $bkManifest
+                                if ($xml.BackupInst.GPODisplayName.'#cdata-section' -eq $gpoName) {
+                                    $_
+                                }
+                            }
+                        } | Select-Object -First 1
+
+                        if ($backupGpo) {
+                            Import-GPO -BackupId $backupGpo.Name -Path $gpoDir -TargetName $gpoName -ErrorAction Stop
+                            Write-CISLog -Message "Restored GPO from backup: $gpoName" -Level Info
+                        } else {
+                            Write-CISLog -Message "No backup found for GPO: $gpoName - skipping restore" -Level Warning
+                        }
+                    } catch {
+                        Write-CISLog -Message "Failed to restore GPO $gpoName`: $_" -Level Error
+                    }
+                } else {
+                    Write-CISLog -Message "GPO not found (may have been deleted): $gpoName" -Level Warning
+                }
+            }
+        }
+
+        # -- Force group policy update --
+        Write-CISLog -Message 'Forcing Group Policy update...' -Level Info
+        try {
+            $null = gpupdate.exe /force /wait:30 2>&1
+            Write-CISLog -Message 'Group Policy update completed' -Level Info
+        } catch {
+            Write-CISLog -Message "gpupdate failed: $_" -Level Warning
+        }
+    } else {
+        Write-CISLog -Message 'Standalone machine - GPO restore skipped, local baselines restored' -Level Info
     }
 
     Write-CISLog -Message "-- Restore complete --" -Level Info

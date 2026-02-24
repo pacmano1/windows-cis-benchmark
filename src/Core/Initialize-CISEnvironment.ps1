@@ -38,16 +38,27 @@ function Initialize-CISEnvironment {
         }
     }
 
-    # -- Required PowerShell modules --
-    $requiredModules = @('GroupPolicy', 'ActiveDirectory')
+    # -- Detect domain membership --
+    $isDomainJoined = $false
+    try {
+        $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+        $isDomainJoined = [bool]$cs.PartOfDomain
+    } catch { }
+
+    # -- Required PowerShell modules (domain-joined only) --
     if (-not $SkipPrereqCheck) {
-        foreach ($mod in $requiredModules) {
-            if (Get-Module -ListAvailable -Name $mod -ErrorAction SilentlyContinue) {
-                Import-Module $mod -ErrorAction SilentlyContinue
-                Write-CISLog -Message "Module available: $mod" -Level Debug
-            } else {
-                Write-CISLog -Message "Required module not installed: $mod - run Install-Prerequisites.ps1" -Level Warning
+        if ($isDomainJoined) {
+            $requiredModules = @('GroupPolicy', 'ActiveDirectory')
+            foreach ($mod in $requiredModules) {
+                if (Get-Module -ListAvailable -Name $mod -ErrorAction SilentlyContinue) {
+                    Import-Module $mod -ErrorAction SilentlyContinue
+                    Write-CISLog -Message "Module available: $mod" -Level Debug
+                } else {
+                    Write-CISLog -Message "Required module not installed: $mod - run Install-Prerequisites.ps1" -Level Warning
+                }
             }
+        } else {
+            Write-CISLog -Message 'Standalone machine detected - skipping AD/GPO module checks' -Level Info
         }
     }
 

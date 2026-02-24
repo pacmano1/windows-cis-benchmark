@@ -37,8 +37,15 @@ Import-Module $modulePath -Force
 Write-Host '  [1/4] Initializing...' -ForegroundColor Cyan
 $config = Initialize-CISEnvironment -ProjectRoot $ProjectRoot -SkipPrereqCheck:$SkipPrereqCheck
 
-# -- Pre-flight connectivity --
-if ($config.HaltOnConnectivityFailure -and -not $SkipPrereqCheck) {
+# -- Detect domain membership --
+$isDomainJoined = $false
+try {
+    $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+    $isDomainJoined = [bool]$cs.PartOfDomain
+} catch { }
+
+# -- Pre-flight connectivity (domain-joined only) --
+if ($isDomainJoined -and $config.HaltOnConnectivityFailure -and -not $SkipPrereqCheck) {
     Write-Host '  [2/4] Pre-flight connectivity check...' -ForegroundColor Cyan
     $connectivity = Test-AWSConnectivity
     if (-not $connectivity.Pass) {
