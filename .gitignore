@@ -1,0 +1,12 @@
+# Audit reports (generated)
+reports/
+
+# State backups (generated)
+backups/
+
+# PowerShell module output
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
