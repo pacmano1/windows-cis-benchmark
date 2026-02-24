@@ -1,6 +1,6 @@
 # Rollback Guide
 
-The rollback pipeline reverts CIS Benchmark changes by restoring GPOs from backup or removing them entirely.
+The rollback pipeline reverts CIS Benchmark changes. On domain-joined machines, it restores GPOs from backup or removes them. On standalone machines, it restores local secedit, auditpol, and service baselines.
 
 ---
 
@@ -74,22 +74,34 @@ This unlinks and **deletes** all CIS GPOs. Use when you want a clean slate rathe
 
 ## What Happens During Rollback
 
-### Restore Mode (Default)
+### On Standalone Machines (Local Policy)
 
 1. Loads backup metadata from `backup-metadata.json`
-2. For each module:
+2. Restores secedit baseline via `secedit /configure`
+3. Restores audit policy via `auditpol /restore`
+4. Restores service startup states via registry writes
+5. GPO operations are skipped
+
+### On Domain-Joined Machines
+
+#### Restore Mode (Default)
+
+1. Loads backup metadata from `backup-metadata.json`
+2. Restores local baselines (secedit, auditpol, services)
+3. For each module:
    - Finds the GPO backup in `GPOs/` subfolder
    - Runs `Import-GPO` to restore the GPO to its pre-apply state
-3. Runs `gpupdate /force` to apply restored settings immediately
-4. Runs post-rollback connectivity check
+4. Runs `gpupdate /force` to apply restored settings immediately
+5. Runs post-rollback connectivity check
 
-### Remove Mode (`-RemoveGPOs`)
+#### Remove Mode (`-RemoveGPOs`)
 
-1. For each module:
+1. Restores local baselines (secedit, auditpol, services)
+2. For each module:
    - Unlinks the GPO from the target OU (`Remove-GPLink`)
    - Deletes the GPO (`Remove-GPO`)
-2. Runs `gpupdate /force`
-3. Runs post-rollback connectivity check
+3. Runs `gpupdate /force`
+4. Runs post-rollback connectivity check
 
 ---
 

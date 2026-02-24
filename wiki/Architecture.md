@@ -111,20 +111,31 @@ Invoke-CISAudit.ps1
 
 ### Apply Flow
 
+The apply auto-detects domain membership and operates in GPO or local policy mode:
+
 ```
 Invoke-CISApply.ps1
   ├─ Initialize-CISEnvironment
+  ├─ Detect domain membership (Win32_ComputerSystem.PartOfDomain)
   ├─ Safety confirmation prompt (if not DryRun)
-  ├─ Test-AWSConnectivity (pre-flight)
-  ├─ Backup-CISState (snapshot current GPOs + local policy)
-  ├─ New-CISGpoFramework (create/link one GPO per module)
+  ├─ Test-AWSConnectivity (pre-flight, domain only)
+  ├─ Backup-CISState (snapshot current state)
+  │    ├─ GPO backups via Backup-GPO (domain only)
+  │    ├─ secedit export, auditpol export, service states (always)
+  ├─ [Domain] New-CISGpoFramework (create/link one GPO per module)
+  │   [Local]  Map modules to local policy targets
   ├─ For each enabled module (ordered):
-  │    └─ Set-CIS<Module> -GpoName <prefix>-<module> -DryRun <bool>
-  │         ├─ Registry controls → Set-GPRegistryValue
-  │         ├─ Secedit controls → Write GptTmpl.inf to SYSVOL
-  │         ├─ Audit controls → Write audit.csv to SYSVOL
-  │         └─ Service controls → Set-GPRegistryValue on Start key
-  ├─ Test-AWSConnectivity (post-flight)
+  │    └─ Set-CIS<Module> -DryRun <bool> [-LocalPolicy]
+  │         ├─ [Domain] Registry → Set-GPRegistryValue
+  │         │   [Local]  Registry → Set-ItemProperty
+  │         ├─ [Domain] Secedit → Write GptTmpl.inf to SYSVOL
+  │         │   [Local]  Secedit → secedit /configure with temp INF
+  │         ├─ [Domain] Audit → Write audit.csv to SYSVOL
+  │         │   [Local]  Audit → auditpol /set per subcategory
+  │         └─ [Domain] Services → Set-GPRegistryValue on Start key
+  │             [Local]  Services → Set-ItemProperty on Start key
+  ├─ [Domain] gpupdate /force /wait:120
+  ├─ Test-AWSConnectivity (post-flight, domain only)
   └─ Test-CIS* + Export-CISReport (post-apply compliance)
 ```
 
@@ -133,22 +144,26 @@ Invoke-CISApply.ps1
 ```
 Invoke-CISRollback.ps1
   ├─ Initialize-CISEnvironment
+  ├─ Detect domain membership
   ├─ Find backup (latest or specified)
   ├─ Restore-CISState
-  │    ├─ Import-GPO from backup  —OR—  Remove-GPO entirely
-  │    └─ gpupdate /force
-  └─ Test-AWSConnectivity (post-rollback)
+  │    ├─ Restore secedit baseline (secedit /configure) — always
+  │    ├─ Restore auditpol baseline (auditpol /restore) — always
+  │    ├─ Restore service startup states — always
+  │    ├─ [Domain] Import-GPO from backup  —OR—  Remove-GPO entirely
+  │    └─ [Domain] gpupdate /force
+  └─ Test-AWSConnectivity (post-rollback, domain only)
 ```
 
 ## Apply Mechanisms by Type
 
-| Setting Type | Where It Lives | Audit Reads | Apply Writes |
+| Setting Type | Audit Reads | Apply (Domain/GPO) | Apply (Local Policy) |
 |---|---|---|---|
-| Registry-based | HKLM registry | `Get-ItemProperty` | `Set-GPRegistryValue` on GPO |
-| User Rights Assignment | Security policy | `secedit /export` → parse .inf | Write `GptTmpl.inf` to `{GPO}\Machine\...\SecEdit\` |
-| Advanced Audit Policy | Audit subcategories | `auditpol /get /category:*` | Write `audit.csv` to `{GPO}\Machine\...\Audit\` |
-| Security Options (secedit) | Security policy | `secedit /export` → parse .inf | Write `GptTmpl.inf` to `{GPO}\Machine\...\SecEdit\` |
-| Services | Service startup type | `Get-Service` + `Win32_Service` | `Set-GPRegistryValue` on `HKLM\...\Services\<name>\Start` |
+| Registry-based | `Get-ItemProperty` | `Set-GPRegistryValue` on GPO | `Set-ItemProperty` directly |
+| User Rights Assignment | `secedit /export` | Write `GptTmpl.inf` to SYSVOL | `secedit /configure` with temp INF |
+| Advanced Audit Policy | `auditpol /get /category:*` | Write `audit.csv` to SYSVOL | `auditpol /set` per subcategory |
+| Security Options (secedit) | `secedit /export` | Write `GptTmpl.inf` to SYSVOL | `secedit /configure` with temp INF |
+| Services | `Get-Service` + `Win32_Service` | `Set-GPRegistryValue` on Start key | `Set-ItemProperty` on Start key |
 
 ## Module Loading Order
 

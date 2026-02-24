@@ -1,12 +1,17 @@
 # Apply Guide
 
-The apply pipeline creates Group Policy Objects and populates them with CIS-compliant settings. This **modifies Active Directory** — use with care.
+The apply pipeline enforces CIS-compliant settings. It auto-detects your environment and operates in one of two modes:
+
+| Mode | When | How |
+|---|---|---|
+| **GPO Mode** | Domain-joined machine | Creates GPOs in AD, links to target OU, runs `gpupdate /force` |
+| **Local Policy Mode** | Standalone machine (or `-LocalPolicy` flag) | Writes directly to registry, secedit, and auditpol |
 
 ---
 
 ## Prerequisites
 
-Before applying:
+### Domain Mode (GPO)
 
 1. **Run prerequisites installer:**
    ```powershell
@@ -28,7 +33,20 @@ Before applying:
    ```powershell
    .\scripts\Invoke-CISAudit.ps1
    ```
-   Review the report to understand your current compliance posture.
+
+### Standalone / Local Policy Mode
+
+1. **Run prerequisites installer** (auto-detects standalone):
+   ```powershell
+   .\scripts\Install-Prerequisites.ps1
+   ```
+
+2. **Run an audit first:**
+   ```powershell
+   .\scripts\Invoke-CISAudit.ps1 -SkipPrereqCheck
+   ```
+
+No AD permissions, RSAT modules, or domain connectivity required.
 
 ---
 
@@ -102,54 +120,60 @@ Type YES to proceed:
 
 ## What Happens During Apply
 
-### 1. Pre-Flight Connectivity Check
-Validates WinRM, SSM Agent, and RDP are operational. Aborts if any critical check fails.
+### Step 1: Environment Detection
+Auto-detects domain membership via `Win32_ComputerSystem.PartOfDomain`:
+- **Domain-joined** -> GPO mode (creates GPOs in AD)
+- **Standalone** -> Local policy mode (writes directly to local machine)
 
-### 2. State Backup
+You'll see one of:
+```
+    +  Target: GROUP POLICY (domain-joined machine)
+    +  Target: LOCAL POLICY (standalone machine detected)
+```
+
+### Step 2: Pre-Flight Connectivity Check (Domain Only)
+Validates WinRM, SSM Agent, and RDP are operational. Skipped in local policy mode.
+
+### Step 3: State Backup
 Creates a timestamped backup in `backups/CIS-Backup-<timestamp>/`:
-- GPO backups (via `Backup-GPO`)
-- Current secedit policy export
-- Current auditpol export
-- All service startup states
-- Metadata (timestamp, modules, OU, computer name)
 
-### 3. GPO Framework Creation
-For each enabled module, creates a GPO named `<GpoPrefix>-<ModuleName>`:
+| Backup item | Domain mode | Local policy mode |
+|---|---|---|
+| GPO backups (`Backup-GPO`) | Yes | Skipped |
+| secedit policy export | Yes | Yes |
+| auditpol export | Yes | Yes |
+| Service startup states | Yes | Yes |
+| Metadata JSON | Yes | Yes |
 
-```
-CIS-L1-AdminTemplates
-CIS-L1-AuditPolicy
-CIS-L1-Firewall
-CIS-L1-SecurityOptions
-CIS-L1-Services
-CIS-L1-UserRightsAssignment
-CIS-L1-AdminTemplatesUser
-```
+### Step 4: GPO Framework / Local Policy Preparation
 
-Each GPO is linked to the target OU. If a GPO already exists, it's reused.
+**Domain mode:** Creates a GPO per module (`<GpoPrefix>-<ModuleName>`) and links each to the target OU.
 
-### 4. Apply Settings (Ordered)
+**Local policy mode:** Prepares direct-write targets (no GPOs created).
 
-Settings are applied in this order:
+### Step 5: Apply Settings (Ordered)
 
-| Order | Module | Mechanism | Why This Order |
+| Order | Module | Domain (GPO) | Local Policy |
 |---|---|---|---|
-| 1 | AdminTemplates | `Set-GPRegistryValue` | Largest module, registry-based (fast) |
-| 2 | Firewall | `Set-GPRegistryValue` | Registry-based |
-| 3 | AdminTemplatesUser | `Set-GPRegistryValue` | Registry-based (User config) |
-| 4 | SecurityOptions | `Set-GPRegistryValue` + GptTmpl.inf | Mixed mechanism |
-| 5 | UserRightsAssignment | GptTmpl.inf | Secedit-based |
-| 6 | AuditPolicy | audit.csv | Requires CSE GUID update |
-| 7 | Services | `Set-GPRegistryValue` | Registry-based |
-| 8 | AccountPolicies | (skipped) | AWS-owned |
+| 1 | AdminTemplates | `Set-GPRegistryValue` | `Set-ItemProperty` |
+| 2 | Firewall | `Set-GPRegistryValue` | `Set-ItemProperty` |
+| 3 | AdminTemplatesUser | `Set-GPRegistryValue` | `Set-ItemProperty` |
+| 4 | SecurityOptions | `Set-GPRegistryValue` + GptTmpl.inf | `Set-ItemProperty` + `secedit /configure` |
+| 5 | UserRightsAssignment | GptTmpl.inf | `secedit /configure` |
+| 6 | AuditPolicy | audit.csv + CSE GUID | `auditpol /set` per subcategory |
+| 7 | Services | `Set-GPRegistryValue` | `Set-ItemProperty` on Start key |
+| 8 | AccountPolicies | (skipped) | (skipped) |
 
-### 5. Post-Flight Connectivity Check
-Re-validates WinRM, SSM, and RDP. If any check fails:
-- Logs a prominent error with the backup path
-- Suggests running rollback
-- Exits with error code 1
+### Step 6: Policy Refresh
 
-### 6. Post-Apply Compliance Report
+**Domain mode:** Runs `gpupdate /force /wait:120` to apply GPO settings to the local machine.
+
+**Local policy mode:** No refresh needed — settings were written directly.
+
+### Step 7: Post-Flight Connectivity Check (Domain Only)
+Re-validates WinRM, SSM, and RDP. Skipped in local policy mode.
+
+### Step 8: Post-Apply Compliance Report
 Runs a full audit and generates an updated report so you can see the compliance improvement.
 
 ---
@@ -181,13 +205,40 @@ Running apply again is safe:
 
 ---
 
+## Golden AMI Workflow (Local Policy)
+
+The local policy mode is ideal for building hardened AMIs:
+
+```powershell
+# 1. Launch a fresh Windows Server 2025 instance
+# 2. Run prerequisites and CIS hardening
+.\scripts\Install-Prerequisites.ps1
+.\scripts\Invoke-CISApply.ps1 -DryRun $false -SkipPrereqCheck
+
+# 3. Verify compliance
+.\scripts\Invoke-CISAudit.ps1 -SkipPrereqCheck
+
+# 4. Save as AMI
+# 5. Launch EC2 instances from AMI and join to AD
+```
+
+**What happens when the AMI joins a domain:**
+- Local policy settings serve as the hardened baseline (lowest priority)
+- Domain/OU GPOs layer on top and override any overlapping settings
+- Settings not covered by domain GPOs retain their hardened local values
+- Group Policy precedence: Local < Site < Domain < OU
+
+---
+
 ## Incremental Rollout Strategy
 
 Recommended approach for production:
 
+### Domain Mode
+
 1. **Test environment first:**
    - Create a test OU with one or two servers
-   - Apply all modules → verify functionality → run audit
+   - Apply all modules -> verify functionality -> run audit
 
 2. **Production — one module at a time:**
    ```powershell
@@ -209,3 +260,18 @@ Recommended approach for production:
 
 4. **Full rollout:**
    - Once all modules are validated, move the target OU scope to include all servers
+
+### Standalone Mode
+
+1. **Apply all at once** (safe — changes are local only):
+   ```powershell
+   .\scripts\Invoke-CISApply.ps1 -DryRun $false -SkipPrereqCheck
+   ```
+
+2. **Or module-by-module:**
+   ```powershell
+   .\scripts\Invoke-CISApply.ps1 -Modules Firewall -DryRun $false -SkipPrereqCheck
+   .\scripts\Invoke-CISApply.ps1 -Modules AdminTemplates -DryRun $false -SkipPrereqCheck
+   ```
+
+3. **Rollback** restores secedit/auditpol baselines and service states from backup

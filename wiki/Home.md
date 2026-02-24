@@ -1,6 +1,6 @@
 # CIS Benchmark L1 Automation — Windows Server 2025
 
-Automated audit, enforcement, and rollback of **CIS Microsoft Windows Server 2025 Benchmark v1.0.0** (Level 1, Member Server profile) for machines joined to **AWS Managed Microsoft AD**.
+Automated audit, enforcement, and rollback of **CIS Microsoft Windows Server 2025 Benchmark v1.0.0** (Level 1, Member Server profile). Supports both **domain-joined** machines (AWS Managed Microsoft AD) and **standalone** machines (local policy mode).
 
 ---
 
@@ -9,18 +9,22 @@ Automated audit, enforcement, and rollback of **CIS Microsoft Windows Server 202
 | Capability | Description |
 |---|---|
 | **Audit** | Scans a Windows Server 2025 machine against 339 CIS L1 controls and generates HTML + JSON compliance reports |
-| **Apply** | Creates one Group Policy Object per CIS section, links them to your delegated OU, and populates settings |
-| **Rollback** | Restores GPOs to pre-apply state or removes them entirely |
+| **Apply (Domain)** | Creates one Group Policy Object per CIS section, links them to your delegated OU, and populates settings |
+| **Apply (Standalone)** | Writes settings directly to local registry, secedit, and auditpol — no AD required |
+| **Rollback** | Restores to pre-apply state (GPO restore on domain, local baseline restore on standalone) |
 
 ## Key Safety Features
 
 - **DryRun = $true by default** — nothing changes until you explicitly opt in
-- **Pre/post-flight connectivity checks** — validates WinRM, SSM Agent, and RDP before and after changes
+- **Auto-detects environment** — domain-joined vs standalone, server vs workstation
+- **Pre/post-flight connectivity checks** — validates WinRM, SSM Agent, and RDP (domain mode only)
 - **AWS exclusions** — never disables RDP, WinRM, or SSM; never touches domain password policy
-- **One GPO per module** — unlink a single GPO to disable an entire category instantly
+- **One GPO per module** (domain mode) — unlink a single GPO to disable an entire category instantly
 - **Full state backup** before every apply operation
 
 ## Quick Start
+
+### Domain-Joined (AWS Managed AD)
 
 ```powershell
 # 1. Install prerequisites (run as Administrator on the target server)
@@ -41,6 +45,24 @@ notepad .\config\master-config.psd1    # Set TargetOU, GpoPrefix, enable/disable
 .\scripts\Invoke-CISRollback.ps1
 ```
 
+### Standalone (No Domain / Golden AMI)
+
+```powershell
+# 1. Install prerequisites (auto-detects standalone mode)
+.\scripts\Install-Prerequisites.ps1
+
+# 2. Audit current compliance
+.\scripts\Invoke-CISAudit.ps1 -SkipPrereqCheck
+
+# 3. Apply CIS hardening directly to local policy
+.\scripts\Invoke-CISApply.ps1 -DryRun $false -SkipPrereqCheck
+
+# 4. Verify compliance
+.\scripts\Invoke-CISAudit.ps1 -SkipPrereqCheck
+
+# 5. Save as AMI for deployment
+```
+
 ## Wiki Pages
 
 | Page | Description |
@@ -57,12 +79,18 @@ notepad .\config\master-config.psd1    # Set TargetOU, GpoPrefix, enable/disable
 
 ## Requirements
 
+### Domain Mode (GPO)
 - Windows Server 2025 (EC2 instance)
 - PowerShell 5.1+
 - RSAT: Active Directory + Group Policy (installed via `Install-Prerequisites.ps1`)
 - Domain-joined to AWS Managed Microsoft AD
 - Delegated OU with GPO creation/link permissions
-- Pester 5.x (for tests)
+
+### Standalone / Local Policy Mode
+- Windows Server 2025 (or Windows 10/11 workstation)
+- PowerShell 5.1+
+- Administrator privileges
+- No AD or RSAT required
 
 ## Control Coverage
 

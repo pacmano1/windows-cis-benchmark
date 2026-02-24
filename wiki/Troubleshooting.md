@@ -8,9 +8,9 @@ Common issues and solutions when running the CIS Benchmark automation.
 
 ### "Required module not installed: GroupPolicy"
 
-**Cause:** RSAT tools are not installed.
+**Cause:** RSAT tools are not installed. This warning only appears on domain-joined machines.
 
-**Fix:**
+**Fix (domain-joined):**
 ```powershell
 # Run as Administrator
 .\scripts\Install-Prerequisites.ps1
@@ -19,6 +19,8 @@ Common issues and solutions when running the CIS Benchmark automation.
 Install-WindowsFeature -Name GPMC -IncludeManagementTools
 Install-WindowsFeature -Name RSAT-AD-PowerShell
 ```
+
+**Standalone machines:** This warning is automatically suppressed. If you see it, use `-SkipPrereqCheck`.
 
 ### "secedit.exe not found"
 
@@ -125,7 +127,16 @@ $sid.Translate([System.Security.Principal.NTAccount]).Value
 
 ## Apply Issues
 
-### "Cannot find GPO 'CIS-L1-X'"
+### "No GPO mapped, skipped" for All Modules
+
+**Cause:** Running on a standalone (non-domain) machine. The GPO framework can't create GPOs without Active Directory.
+
+**Fix:** This is handled automatically now. The apply script auto-detects standalone machines and uses local policy mode. If you're on an older version, update or use:
+```powershell
+.\scripts\Invoke-CISApply.ps1 -DryRun $false -LocalPolicy -SkipPrereqCheck
+```
+
+### "Cannot find GPO 'CIS-L1-X'" (Domain Mode)
 
 **Cause:** GPO creation failed (permissions, AD connectivity, or naming conflict).
 

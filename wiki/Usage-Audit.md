@@ -26,11 +26,13 @@ This runs every module enabled in `master-config.psd1` and generates reports in 
 
 ### Skip Prerequisite Checks
 
-Useful for testing on non-domain machines or when RSAT isn't fully installed:
+Useful on standalone (non-domain) machines or when RSAT isn't installed:
 
 ```powershell
 .\scripts\Invoke-CISAudit.ps1 -SkipPrereqCheck
 ```
+
+> **Note:** On standalone machines, the audit auto-detects that you're not domain-joined and skips AD/GPO-related checks automatically. The `-SkipPrereqCheck` flag is still useful to suppress module-availability warnings.
 
 ### Audit a Disabled Module
 
@@ -131,7 +133,7 @@ Detailed log at `reports/CIS-<timestamp>.log` — includes Debug-level messages 
 
 ## Pre-Flight Connectivity Check
 
-Before auditing, `Test-AWSConnectivity` verifies:
+On **domain-joined** machines, `Test-AWSConnectivity` verifies management channels before auditing:
 
 | Service | Check | Impact of Failure |
 |---|---|---|
@@ -140,7 +142,9 @@ Before auditing, `Test-AWSConnectivity` verifies:
 | RDP | TermService running + port detected | Audit halts |
 | Firewall | Management allow rules exist | Warning only |
 
-To skip: use `-SkipPrereqCheck` or set `HaltOnConnectivityFailure = $false` in master-config.
+On **standalone** machines, this check is automatically skipped (no AWS services to validate).
+
+To skip manually: use `-SkipPrereqCheck` or set `HaltOnConnectivityFailure = $false` in master-config.
 
 ---
 
