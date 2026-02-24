@@ -7,8 +7,9 @@
     3. Creates state backup
     4. Creates GPO framework (one GPO per module)
     5. Applies settings for each enabled module
-    6. Runs post-flight connectivity check
-    7. If post-flight fails, offers rollback
+    6. Runs gpupdate /force to apply GPO settings locally
+    7. Runs post-flight connectivity check
+    8. If post-flight fails, offers rollback
 .PARAMETER ProjectRoot
     Path to the security_benchmarks project root.
 .PARAMETER Modules
@@ -46,7 +47,7 @@ $modulePath = Join-Path (Join-Path $ProjectRoot 'src') 'CISBenchmark.psm1'
 Import-Module $modulePath -Force
 
 # -- Initialize --
-Write-Host '  [1/6] Initializing...' -ForegroundColor Cyan
+Write-Host '  [1/7] Initializing...' -ForegroundColor Cyan
 $config = Initialize-CISEnvironment -ProjectRoot $ProjectRoot -SkipPrereqCheck:$SkipPrereqCheck
 
 # Override DryRun if explicitly passed
@@ -79,7 +80,7 @@ if (-not $isDryRun -and -not $Force) {
 
 # -- Pre-flight connectivity --
 if ($config.HaltOnConnectivityFailure -and -not $SkipPrereqCheck) {
-    Write-Host '  [2/6] Pre-flight connectivity check...' -ForegroundColor Cyan
+    Write-Host '  [2/7] Pre-flight connectivity check...' -ForegroundColor Cyan
     $preFlight = Test-AWSConnectivity
     if (-not $preFlight.Pass) {
         Write-Host '    x  Pre-flight FAILED - aborting apply' -ForegroundColor Red
@@ -88,7 +89,7 @@ if ($config.HaltOnConnectivityFailure -and -not $SkipPrereqCheck) {
     }
     Write-Host '    +  Connectivity OK' -ForegroundColor Green
 } else {
-    Write-Host '  [2/6] Pre-flight check skipped' -ForegroundColor DarkGray
+    Write-Host '  [2/7] Pre-flight check skipped' -ForegroundColor DarkGray
 }
 
 # -- Determine modules --
@@ -100,20 +101,20 @@ $modulesToApply = if ($Modules) {
 
 # -- Backup current state --
 if (-not $isDryRun) {
-    Write-Host '  [3/6] Creating state backup...' -ForegroundColor Cyan
+    Write-Host '  [3/7] Creating state backup...' -ForegroundColor Cyan
     $backupPath = Backup-CISState -Modules $modulesToApply
     Write-Host "    +  Backup saved: $backupPath" -ForegroundColor Green
 } else {
-    Write-Host '  [3/6] Backup skipped (dry run)' -ForegroundColor DarkGray
+    Write-Host '  [3/7] Backup skipped (dry run)' -ForegroundColor DarkGray
 }
 
 # -- Create GPO framework --
-Write-Host '  [4/6] Creating GPO framework...' -ForegroundColor Cyan
+Write-Host '  [4/7] Creating GPO framework...' -ForegroundColor Cyan
 $gpoMap = New-CISGpoFramework -DryRun $isDryRun
 Write-Host "    +  $($gpoMap.Count) GPOs configured" -ForegroundColor Green
 
 # -- Apply each module --
-Write-Host "  [5/6] Applying $($modulesToApply.Count) modules..." -ForegroundColor Cyan
+Write-Host "  [5/7] Applying $($modulesToApply.Count) modules..." -ForegroundColor Cyan
 Write-Host ''
 
 $applyOrder = @(
@@ -155,9 +156,24 @@ foreach ($modName in $applyOrder) {
 
 Write-Host ''
 
+# -- Force Group Policy update so local state reflects GPO changes --
+if (-not $isDryRun) {
+    Write-Host '  [6/7] Applying Group Policy to local machine...' -ForegroundColor Cyan
+    try {
+        $gpResult = gpupdate.exe /force /wait:120 2>&1
+        Write-Host '    +  Group Policy updated successfully' -ForegroundColor Green
+        Write-CISLog -Message 'gpupdate /force completed successfully.' -Level Info
+    } catch {
+        Write-Host '    !  Group Policy update returned warnings (settings may need a reboot)' -ForegroundColor Yellow
+        Write-CISLog -Message "gpupdate /force warning: $_" -Level Warning
+    }
+} else {
+    Write-Host '  [6/7] Group Policy update skipped (dry run)' -ForegroundColor DarkGray
+}
+
 # -- Post-flight connectivity --
 if ($config.PostFlightCheck -and -not $isDryRun -and -not $SkipPrereqCheck) {
-    Write-Host '  [6/6] Post-flight connectivity check...' -ForegroundColor Cyan
+    Write-Host '  [7/7] Post-flight connectivity check...' -ForegroundColor Cyan
     $postFlight = Test-AWSConnectivity
 
     if (-not $postFlight.Pass) {
@@ -173,7 +189,7 @@ if ($config.PostFlightCheck -and -not $isDryRun -and -not $SkipPrereqCheck) {
     }
     Write-Host '    +  Connectivity OK' -ForegroundColor Green
 } else {
-    Write-Host '  [6/6] Post-flight check skipped' -ForegroundColor DarkGray
+    Write-Host '  [7/7] Post-flight check skipped' -ForegroundColor DarkGray
 }
 
 # -- Run audit to show compliance delta --
