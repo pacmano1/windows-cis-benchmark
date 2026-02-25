@@ -118,6 +118,47 @@ Type YES to proceed:
 
 ---
 
+## Firewall Rule Hardening (Optional)
+
+Windows ships with default firewall allow rules for consumer features (casting, wireless display, mDNS, etc.) that are inappropriate on hardened servers. The CIS Firewall module (Section 9) only covers firewall **profile settings** -- it doesn't manage individual rules.
+
+Use the `-HardenFirewallRules` switch to disable these unnecessary rule groups:
+
+```powershell
+# Preview what would be disabled (dry run)
+.\scripts\Invoke-CISApply.ps1 -HardenFirewallRules
+
+# Apply CIS settings + disable unnecessary firewall rules
+.\scripts\Invoke-CISApply.ps1 -DryRun $false -HardenFirewallRules
+
+# Standalone machine
+.\scripts\Invoke-CISApply.ps1 -DryRun $false -SkipPrereqCheck -HardenFirewallRules
+```
+
+### Rule Groups Disabled
+
+| Group | Why |
+|---|---|
+| Cast to Device functionality | Media casting -- not needed on servers |
+| Wireless Display | Miracast -- not needed on servers |
+| DIAL protocol server | Discovery and Launch -- consumer feature |
+| mDNS | Multicast DNS -- not needed in managed environments |
+| AllJoyn Router | IoT protocol -- not needed on servers |
+| Connected Devices Platform | Consumer device pairing |
+| Connected Devices Platform - Wi-Fi Direct Transport | Wi-Fi Direct -- not needed on servers |
+| Wi-Fi Direct Network Discovery | Wi-Fi Direct -- not needed on servers |
+| Wi-Fi Direct Scan | Wi-Fi Direct -- not needed on servers |
+| Wi-Fi Direct Spooler Use | Wi-Fi Direct -- not needed on servers |
+| Proximity Sharing | Near Share -- consumer feature |
+| Media Center Extenders | Windows Media Center -- deprecated |
+| Wireless Portable Devices | MTP device access -- not needed on servers |
+| Microsoft Media Foundation Network Source | Media streaming -- not needed on servers |
+| PlayTo Receiver | DLNA receiver -- not needed on servers |
+
+This is **opt-in only** -- these rules are never disabled unless you explicitly pass `-HardenFirewallRules`. The switch respects DryRun mode.
+
+---
+
 ## What Happens During Apply
 
 ### Step 1: Environment Detection

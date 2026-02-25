@@ -57,10 +57,13 @@ notepad .\config\master-config.psd1    # Set TargetOU, GpoPrefix, enable/disable
 # 3. Apply CIS hardening directly to local policy
 .\scripts\Invoke-CISApply.ps1 -DryRun $false -SkipPrereqCheck
 
-# 4. Verify compliance
+# 4. (Optional) Disable unnecessary firewall rules (casting, mDNS, etc.)
+.\scripts\Invoke-CISApply.ps1 -DryRun $false -SkipPrereqCheck -HardenFirewallRules
+
+# 5. Verify compliance
 .\scripts\Invoke-CISAudit.ps1 -SkipPrereqCheck
 
-# 5. Save as AMI for deployment
+# 6. Save as AMI for deployment
 ```
 
 ## Wiki Pages
