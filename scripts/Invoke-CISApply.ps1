@@ -27,6 +27,9 @@
 .PARAMETER HardenFirewallRules
     Disable unnecessary Windows Firewall allow rules (casting, wireless
     display, mDNS, etc.) that are inappropriate for hardened servers.
+.PARAMETER SkipIIS
+    Skip CIS controls that would disable IIS services (5.6, 5.31, 5.40).
+    If not passed, the script prompts interactively.
 #>
 [CmdletBinding()]
 param(
@@ -42,7 +45,9 @@ param(
 
     [switch]$LocalPolicy,
 
-    [switch]$HardenFirewallRules
+    [switch]$HardenFirewallRules,
+
+    [switch]$SkipIIS
 )
 
 $ErrorActionPreference = 'Stop'
@@ -75,6 +80,29 @@ if ($dryRunExplicit) {
     }
 } else {
     $isDryRun = $config.DryRun
+}
+
+# -- IIS exclusion --
+$iisControls = @('5.6', '5.31', '5.40')
+if ($SkipIIS) {
+    $doSkipIIS = $true
+} elseif (-not $Force) {
+    Write-Host ''
+    $iisChoice = Read-Host '  ? Does this server run IIS (web server)? [y/N]'
+    $doSkipIIS = $iisChoice -match '^[Yy]'
+} else {
+    $doSkipIIS = $false
+}
+if ($doSkipIIS) {
+    foreach ($modName in $config.ModuleConfigs.Keys) {
+        foreach ($ctl in $config.ModuleConfigs[$modName].Controls) {
+            if ($iisControls -contains $ctl.Id) {
+                $ctl.Skipped    = $true
+                $ctl.SkipReason = 'IIS server — service must remain enabled'
+            }
+        }
+    }
+    Write-Host '    +  IIS controls skipped (5.6, 5.31, 5.40)' -ForegroundColor Green
 }
 
 # -- Detect domain membership --
@@ -318,36 +346,45 @@ if (-not $isLocalMode -and $config.PostFlightCheck -and -not $isDryRun -and -not
     Write-Host '  [7/7] Post-flight check skipped' -ForegroundColor DarkGray
 }
 
-# -- Run audit to show compliance delta --
-Write-Host ''
-Write-Host '  Running post-apply compliance audit...' -ForegroundColor Cyan
+# -- Run audit to show compliance delta (live mode only) --
+if (-not $isDryRun) {
+    Write-Host ''
+    Write-Host '  Running post-apply compliance audit...' -ForegroundColor Cyan
 
-$allResults = @()
-foreach ($modName in $modulesToApply) {
-    $testFunc = "Test-CIS$modName"
-    if (Get-Command $testFunc -ErrorAction SilentlyContinue) {
-        try {
-            $results = & $testFunc
-            if ($results) { $allResults += $results }
-        } catch {
-            Write-CISLog -Message "Post-apply audit error for $modName`: $_" -Level Warning
+    $allResults = @()
+    foreach ($modName in $modulesToApply) {
+        $testFunc = "Test-CIS$modName"
+        if (Get-Command $testFunc -ErrorAction SilentlyContinue) {
+            try {
+                $results = & $testFunc
+                if ($results) { $allResults += $results }
+            } catch {
+                Write-CISLog -Message "Post-apply audit error for $modName`: $_" -Level Warning
+            }
         }
     }
-}
 
-if ($allResults.Count -gt 0) {
-    $summary = Export-CISReport -Results $allResults -Formats $config.ReportFormats
+    if ($allResults.Count -gt 0) {
+        $summary = Export-CISReport -Results $allResults -Formats $config.ReportFormats
 
+        Write-Host ''
+        Write-Host '  ==================================' -ForegroundColor DarkGray
+        Write-Host '  Apply Complete' -ForegroundColor White
+        Write-Host '  ---------------------------------' -ForegroundColor DarkGray
+        Write-Host "    Mode:       LIVE" -ForegroundColor Green
+        Write-Host "    Compliance: $($summary.PassPercent)% ($($summary.Passed)/$($summary.Total - $summary.Skipped))" -ForegroundColor $(
+            if ($summary.PassPercent -ge 90) { 'Green' }
+            elseif ($summary.PassPercent -ge 70) { 'Yellow' }
+            else { 'Red' }
+        )
+        Write-Host '  ==================================' -ForegroundColor DarkGray
+    }
+} else {
     Write-Host ''
     Write-Host '  ==================================' -ForegroundColor DarkGray
-    Write-Host '  Apply Complete' -ForegroundColor White
+    Write-Host '  Dry Run Complete' -ForegroundColor White
     Write-Host '  ---------------------------------' -ForegroundColor DarkGray
-    Write-Host "    Mode:       $(if ($isDryRun) { 'DRY RUN' } else { 'LIVE' })" -ForegroundColor $(if ($isDryRun) { 'Yellow' } else { 'Green' })
-    Write-Host "    Compliance: $($summary.PassPercent)% ($($summary.Passed)/$($summary.Total - $summary.Skipped))" -ForegroundColor $(
-        if ($summary.PassPercent -ge 90) { 'Green' }
-        elseif ($summary.PassPercent -ge 70) { 'Yellow' }
-        else { 'Red' }
-    )
+    Write-Host '    No changes were made. Run with LIVE mode to apply.' -ForegroundColor Yellow
     Write-Host '  ==================================' -ForegroundColor DarkGray
 }
 Write-Host ''

@@ -13,6 +13,9 @@
     Skip prerequisite validation.
 .PARAMETER Force
     Skip interactive prompts (use defaults for all options).
+.PARAMETER SkipIIS
+    Skip CIS controls that would disable IIS services (5.6, 5.31, 5.40).
+    If not passed, the script prompts interactively.
 #>
 [CmdletBinding()]
 param(
@@ -22,7 +25,9 @@ param(
 
     [switch]$SkipPrereqCheck,
 
-    [switch]$Force
+    [switch]$Force,
+
+    [switch]$SkipIIS
 )
 
 $ErrorActionPreference = 'Stop'
@@ -40,6 +45,29 @@ Import-Module $modulePath -Force
 # -- Initialize --
 Write-Host '  [1/4] Initializing...' -ForegroundColor Cyan
 $config = Initialize-CISEnvironment -ProjectRoot $ProjectRoot -SkipPrereqCheck:$SkipPrereqCheck
+
+# -- IIS exclusion --
+$iisControls = @('5.6', '5.31', '5.40')
+if ($SkipIIS) {
+    $doSkipIIS = $true
+} elseif (-not $Force) {
+    Write-Host ''
+    $iisChoice = Read-Host '  ? Does this server run IIS (web server)? [y/N]'
+    $doSkipIIS = $iisChoice -match '^[Yy]'
+} else {
+    $doSkipIIS = $false
+}
+if ($doSkipIIS) {
+    foreach ($modName in $config.ModuleConfigs.Keys) {
+        foreach ($ctl in $config.ModuleConfigs[$modName].Controls) {
+            if ($iisControls -contains $ctl.Id) {
+                $ctl.Skipped    = $true
+                $ctl.SkipReason = 'IIS server — service must remain enabled'
+            }
+        }
+    }
+    Write-Host '    +  IIS controls skipped (5.6, 5.31, 5.40)' -ForegroundColor Green
+}
 
 # -- Detect domain membership --
 $isDomainJoined = $false
