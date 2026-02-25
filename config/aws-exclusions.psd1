@@ -18,6 +18,9 @@
         '5.22'   # Remote Desktop Services UserMode Port Redirector (UmRdpService) — must stay for RDP
         '5.39'   # Windows Remote Management (WinRM) — must stay for SSM/management
 
+        # Section 9 — Firewall
+        '9.3.5'           # Public: AllowLocalPolicyMerge — disabling this ignores local allow rules (including RDP) on the Public profile
+
         # Section 18 — RDS session limits
         '18.9.35.3.10.2'  # Disconnected session timeout (1 min) — kills user sessions; disconnect is fine, logoff is not
     )
