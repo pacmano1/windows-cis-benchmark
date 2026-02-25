@@ -78,33 +78,36 @@ if (Test-Path $rdpTcpPath) {
     Write-Host '    !  RDP-Tcp path not found' -ForegroundColor Red
 }
 
-# -- Step 4: Remove firewall policy overrides that block inbound / ignore local rules --
-Write-Host '  [4/7] Removing firewall policy overrides...' -ForegroundColor Cyan
+# -- Step 4: Remove ENTIRE firewall policy tree (nuke all CIS firewall overrides) --
+Write-Host '  [4/7] Removing all firewall policy overrides...' -ForegroundColor Cyan
 
-$fwProfiles = @(
-    @{ Name = 'Domain';  Path = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\DomainProfile' }
-    @{ Name = 'Private'; Path = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\PrivateProfile' }
-    @{ Name = 'Public';  Path = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\PublicProfile' }
-)
-
-foreach ($profile in $fwProfiles) {
-    if (Test-Path $profile.Path) {
-        # Remove DefaultInboundAction policy (let local rules decide)
-        $inbound = Get-ItemProperty -Path $profile.Path -Name 'DefaultInboundAction' -ErrorAction SilentlyContinue
-        if ($null -ne $inbound.DefaultInboundAction) {
-            Remove-ItemProperty -Path $profile.Path -Name 'DefaultInboundAction' -ErrorAction SilentlyContinue
-            Write-Host "    -  $($profile.Name): Removed DefaultInboundAction (was $($inbound.DefaultInboundAction))" -ForegroundColor Yellow
+$fwPolicyRoot = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall'
+if (Test-Path $fwPolicyRoot) {
+    # Show what we're removing
+    $fwProfiles = @('DomainProfile', 'PrivateProfile', 'PublicProfile')
+    foreach ($profileName in $fwProfiles) {
+        $profilePath = Join-Path $fwPolicyRoot $profileName
+        if (Test-Path $profilePath) {
+            $props = Get-ItemProperty -Path $profilePath -ErrorAction SilentlyContinue
+            $items = $props.PSObject.Properties | Where-Object { $_.Name -notin @('PSPath','PSParentPath','PSChildName','PSProvider','PSDrive') }
+            foreach ($item in $items) {
+                Write-Host "    -  $profileName\$($item.Name) = $($item.Value)" -ForegroundColor Yellow
+            }
         }
-        # Remove AllowLocalPolicyMerge (allow local firewall rules to work)
-        $localMerge = Get-ItemProperty -Path $profile.Path -Name 'AllowLocalPolicyMerge' -ErrorAction SilentlyContinue
-        if ($null -ne $localMerge.AllowLocalPolicyMerge) {
-            Remove-ItemProperty -Path $profile.Path -Name 'AllowLocalPolicyMerge' -ErrorAction SilentlyContinue
-            Write-Host "    -  $($profile.Name): Removed AllowLocalPolicyMerge (was $($localMerge.AllowLocalPolicyMerge))" -ForegroundColor Yellow
-        }
-    } else {
-        Write-Host "    .  $($profile.Name): No policy key" -ForegroundColor DarkGray
     }
+    # Delete the entire tree
+    Remove-Item -Path $fwPolicyRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host '    +  Removed entire WindowsFirewall policy tree' -ForegroundColor Green
+} else {
+    Write-Host '    .  No firewall policy tree found' -ForegroundColor DarkGray
 }
+
+# Also reset firewall to defaults via netsh as a backstop
+Write-Host '    +  Resetting firewall via netsh...' -ForegroundColor Cyan
+netsh advfirewall set allprofiles firewallpolicy blockinbound,allowoutbound | Out-Null
+netsh advfirewall set allprofiles settings localfirewallrules enable | Out-Null
+netsh advfirewall set allprofiles settings localconsecrules enable | Out-Null
+Write-Host '    +  Firewall reset: block inbound default, local rules enabled' -ForegroundColor Green
 
 # Show active network profile
 try {
@@ -166,14 +169,25 @@ foreach ($key in $diag.Keys) {
 Write-Host ''
 Write-Host '  Firewall Policy State' -ForegroundColor White
 Write-Host '  ---------------------' -ForegroundColor DarkGray
-foreach ($profile in $fwProfiles) {
-    if (Test-Path $profile.Path) {
-        $inb = Get-ItemProperty -Path $profile.Path -Name 'DefaultInboundAction' -ErrorAction SilentlyContinue
-        $merge = Get-ItemProperty -Path $profile.Path -Name 'AllowLocalPolicyMerge' -ErrorAction SilentlyContinue
-        $inbVal = if ($null -ne $inb.DefaultInboundAction) { $inb.DefaultInboundAction } else { '(not set)' }
-        $mergeVal = if ($null -ne $merge.AllowLocalPolicyMerge) { $merge.AllowLocalPolicyMerge } else { '(not set)' }
-        $color = if ($inbVal -eq '(not set)' -and $mergeVal -eq '(not set)') { 'Green' } else { 'Yellow' }
-        Write-Host "    $($profile.Name.PadRight(10)) Inbound=$inbVal  LocalMerge=$mergeVal" -ForegroundColor $color
+$fwPolicyRoot = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall'
+if (Test-Path $fwPolicyRoot) {
+    Write-Host '    !  WindowsFirewall policy tree still exists' -ForegroundColor Red
+    Get-ChildItem $fwPolicyRoot -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+        Write-Host "    $($_.Name)" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host '    +  WindowsFirewall policy tree removed (clean)' -ForegroundColor Green
+}
+
+# Effective firewall state
+Write-Host ''
+Write-Host '  Effective Firewall (netsh)' -ForegroundColor White
+Write-Host '  --------------------------' -ForegroundColor DarkGray
+$fwState = netsh advfirewall show allprofiles 2>&1
+foreach ($line in $fwState) {
+    $trimmed = "$line".Trim()
+    if ($trimmed -match 'Profile|Firewall Policy|State') {
+        Write-Host "    $trimmed" -ForegroundColor DarkGray
     }
 }
 
