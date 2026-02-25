@@ -9,9 +9,10 @@
       1. Removes NLA/TLS/encryption policy overrides from Terminal Services
       2. Ensures RDP is enabled (fDenyTSConnections = 0)
       3. Resets the WinStations RDP-Tcp listener to defaults
-      4. Enables Remote Desktop firewall rules
-      5. Restarts TermService
-      6. Prints diagnostic info
+      4. Removes firewall policy overrides that block inbound + ignore local rules
+      5. Enables Remote Desktop firewall rules
+      6. Restarts TermService and Windows Firewall
+      7. Prints diagnostic info
 .NOTES
     No reboot required. Try RDP immediately after running.
 #>
@@ -25,7 +26,7 @@ Write-Host '  =================' -ForegroundColor DarkGray
 Write-Host ''
 
 # -- Step 1: Remove all RDP policy overrides --
-Write-Host '  [1/5] Removing RDP policy overrides...' -ForegroundColor Cyan
+Write-Host '  [1/7] Removing RDP policy overrides...' -ForegroundColor Cyan
 $tsPolPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
 $policyValues = @('UserAuthentication', 'SecurityLayer', 'MinEncryptionLevel', 'fPromptForPassword', 'fEncryptRPCTraffic')
 
@@ -44,7 +45,7 @@ if (Test-Path $tsPolPath) {
 }
 
 # -- Step 2: Ensure RDP is enabled --
-Write-Host '  [2/5] Ensuring RDP is enabled...' -ForegroundColor Cyan
+Write-Host '  [2/7] Ensuring RDP is enabled...' -ForegroundColor Cyan
 $tsPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
 $fDeny = (Get-ItemProperty -Path $tsPath -Name 'fDenyTSConnections' -ErrorAction SilentlyContinue).fDenyTSConnections
 if ($fDeny -ne 0) {
@@ -55,7 +56,7 @@ if ($fDeny -ne 0) {
 }
 
 # -- Step 3: Reset WinStations listener --
-Write-Host '  [3/5] Resetting WinStations RDP-Tcp listener...' -ForegroundColor Cyan
+Write-Host '  [3/7] Resetting WinStations RDP-Tcp listener...' -ForegroundColor Cyan
 $rdpTcpPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
 if (Test-Path $rdpTcpPath) {
     $listenerNLA = (Get-ItemProperty -Path $rdpTcpPath -Name 'UserAuthentication' -ErrorAction SilentlyContinue).UserAuthentication
@@ -77,8 +78,44 @@ if (Test-Path $rdpTcpPath) {
     Write-Host '    !  RDP-Tcp path not found' -ForegroundColor Red
 }
 
-# -- Step 4: Enable firewall rules --
-Write-Host '  [4/5] Enabling Remote Desktop firewall rules...' -ForegroundColor Cyan
+# -- Step 4: Remove firewall policy overrides that block inbound / ignore local rules --
+Write-Host '  [4/7] Removing firewall policy overrides...' -ForegroundColor Cyan
+
+$fwProfiles = @(
+    @{ Name = 'Domain';  Path = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\DomainProfile' }
+    @{ Name = 'Private'; Path = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\PrivateProfile' }
+    @{ Name = 'Public';  Path = 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\PublicProfile' }
+)
+
+foreach ($profile in $fwProfiles) {
+    if (Test-Path $profile.Path) {
+        # Remove DefaultInboundAction policy (let local rules decide)
+        $inbound = Get-ItemProperty -Path $profile.Path -Name 'DefaultInboundAction' -ErrorAction SilentlyContinue
+        if ($null -ne $inbound.DefaultInboundAction) {
+            Remove-ItemProperty -Path $profile.Path -Name 'DefaultInboundAction' -ErrorAction SilentlyContinue
+            Write-Host "    -  $($profile.Name): Removed DefaultInboundAction (was $($inbound.DefaultInboundAction))" -ForegroundColor Yellow
+        }
+        # Remove AllowLocalPolicyMerge (allow local firewall rules to work)
+        $localMerge = Get-ItemProperty -Path $profile.Path -Name 'AllowLocalPolicyMerge' -ErrorAction SilentlyContinue
+        if ($null -ne $localMerge.AllowLocalPolicyMerge) {
+            Remove-ItemProperty -Path $profile.Path -Name 'AllowLocalPolicyMerge' -ErrorAction SilentlyContinue
+            Write-Host "    -  $($profile.Name): Removed AllowLocalPolicyMerge (was $($localMerge.AllowLocalPolicyMerge))" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "    .  $($profile.Name): No policy key" -ForegroundColor DarkGray
+    }
+}
+
+# Show active network profile
+try {
+    $netProfile = Get-NetConnectionProfile -ErrorAction SilentlyContinue
+    if ($netProfile) {
+        Write-Host "    i  Active network profile: $($netProfile.NetworkCategory)" -ForegroundColor Cyan
+    }
+} catch { }
+
+# -- Step 5: Enable firewall rules --
+Write-Host '  [5/7] Enabling Remote Desktop firewall rules...' -ForegroundColor Cyan
 try {
     Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction Stop
     $rdpRules = Get-NetFirewallRule -DisplayGroup 'Remote Desktop' | Where-Object { $_.Enabled -eq 'True' }
@@ -87,8 +124,17 @@ try {
     Write-Host "    !  Failed: $_" -ForegroundColor Red
 }
 
-# -- Step 5: Restart TermService --
-Write-Host '  [5/5] Restarting TermService...' -ForegroundColor Cyan
+# -- Step 6: Restart firewall service --
+Write-Host '  [6/7] Restarting Windows Firewall service...' -ForegroundColor Cyan
+try {
+    Restart-Service MpsSvc -Force -ErrorAction Stop
+    Write-Host '    +  MpsSvc restarted' -ForegroundColor Green
+} catch {
+    Write-Host "    !  Failed: $_" -ForegroundColor Red
+}
+
+# -- Step 7: Restart TermService --
+Write-Host '  [7/7] Restarting TermService...' -ForegroundColor Cyan
 try {
     Restart-Service TermService -Force -ErrorAction Stop
     Write-Host '    +  TermService restarted' -ForegroundColor Green
@@ -116,7 +162,35 @@ foreach ($key in $diag.Keys) {
     Write-Host "    $($key.PadRight(22)) $val" -ForegroundColor $color
 }
 
-# Check for lingering policy values
+# Firewall policy state
+Write-Host ''
+Write-Host '  Firewall Policy State' -ForegroundColor White
+Write-Host '  ---------------------' -ForegroundColor DarkGray
+foreach ($profile in $fwProfiles) {
+    if (Test-Path $profile.Path) {
+        $inb = Get-ItemProperty -Path $profile.Path -Name 'DefaultInboundAction' -ErrorAction SilentlyContinue
+        $merge = Get-ItemProperty -Path $profile.Path -Name 'AllowLocalPolicyMerge' -ErrorAction SilentlyContinue
+        $inbVal = if ($null -ne $inb.DefaultInboundAction) { $inb.DefaultInboundAction } else { '(not set)' }
+        $mergeVal = if ($null -ne $merge.AllowLocalPolicyMerge) { $merge.AllowLocalPolicyMerge } else { '(not set)' }
+        $color = if ($inbVal -eq '(not set)' -and $mergeVal -eq '(not set)') { 'Green' } else { 'Yellow' }
+        Write-Host "    $($profile.Name.PadRight(10)) Inbound=$inbVal  LocalMerge=$mergeVal" -ForegroundColor $color
+    }
+}
+
+# RDP firewall rules
+Write-Host ''
+Write-Host '  RDP Firewall Rules' -ForegroundColor White
+Write-Host '  ------------------' -ForegroundColor DarkGray
+try {
+    Get-NetFirewallRule -DisplayGroup 'Remote Desktop' | ForEach-Object {
+        $color = if ($_.Enabled -eq 'True') { 'Green' } else { 'Red' }
+        Write-Host "    $($_.DisplayName.PadRight(45)) Enabled=$($_.Enabled)  Dir=$($_.Direction)" -ForegroundColor $color
+    }
+} catch {
+    Write-Host "    !  Could not query rules: $_" -ForegroundColor Red
+}
+
+# Check for lingering TS policy values
 Write-Host ''
 if (Test-Path $tsPolPath) {
     $remaining = Get-ItemProperty -Path $tsPolPath -ErrorAction SilentlyContinue
@@ -127,7 +201,7 @@ if (Test-Path $tsPolPath) {
             Write-Host "    $($p.Name) = $($p.Value)" -ForegroundColor Yellow
         }
     } else {
-        Write-Host '  No lingering RDP policy overrides' -ForegroundColor Green
+        Write-Host '  No lingering TS policy overrides' -ForegroundColor Green
     }
 } else {
     Write-Host '  No Terminal Services policy key exists' -ForegroundColor Green
