@@ -17,6 +17,9 @@
         '5.21'   # Remote Desktop Services (TermService) — must stay for RDP
         '5.22'   # Remote Desktop Services UserMode Port Redirector (UmRdpService) — must stay for RDP
         '5.39'   # Windows Remote Management (WinRM) — must stay for SSM/management
+
+        # Section 18 — RDS session limits
+        '18.9.35.3.10.2'  # Disconnected session timeout (1 min) — kills user sessions; disconnect is fine, logoff is not
     )
 
     # ── Modified values ──
