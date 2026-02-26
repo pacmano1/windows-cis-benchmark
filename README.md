@@ -129,3 +129,19 @@ Full documentation is available in the [Wiki](../../wiki):
 | [AWS Considerations](../../wiki/AWS-Considerations) | AWS Managed AD constraints, IIS exclusions, SSM safety |
 | [Adding Controls](../../wiki/Adding-Controls) | How to add new CIS controls or create new modules |
 | [Troubleshooting](../../wiki/Troubleshooting) | Common issues and solutions |
+
+## CIS Benchmark Attribution
+
+This project implements recommendations from the following CIS Benchmark, published by the [Center for Internet Security](https://www.cisecurity.org/):
+
+- **CIS Microsoft Windows Server 2025 Benchmark v1.0.0** (Level 1 — Member Server)
+
+CIS Benchmarks are available free of charge at [https://www.cisecurity.org/cis-benchmarks](https://www.cisecurity.org/cis-benchmarks). Users of this tool should obtain their own copy of the applicable benchmark to understand the full context, rationale, and remediation guidance for each control.
+
+This project is not certified, endorsed, or affiliated with the Center for Internet Security. CIS and CIS Benchmarks are trademarks of the Center for Internet Security, Inc.
+
+The automation code in this repository is licensed under the [MIT License](LICENSE). The CIS Benchmark content (control numbering, titles, and recommended values) is subject to the CIS Terms of Use.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
